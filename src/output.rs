@@ -33,7 +33,7 @@ impl fmt::Display for StrengthLabel {
 
 /// Entropy and strength metadata for a generated password.
 pub struct StrengthInfo {
-    /// Shannon entropy in bits: `log₂(charset_size) × length`.
+    /// Conservative entropy estimate in bits (see [`crate::generator::entropy_bits`]).
     pub entropy_bits: f64,
     /// Qualitative strength label.
     pub strength: StrengthLabel,
@@ -41,7 +41,7 @@ pub struct StrengthInfo {
     pub charset_size: usize,
 }
 
-/// Compute strength metadata for the given charset size and password length.
+/// Build strength metadata from a charset size and an entropy estimate.
 ///
 /// # Entropy thresholds
 ///
@@ -52,8 +52,7 @@ pub struct StrengthInfo {
 /// | 60 – 79      | Good        |
 /// | 80 – 119     | Strong      |
 /// | ≥ 120        | Very Strong |
-pub fn compute_strength(charset_size: usize, length: usize) -> StrengthInfo {
-    let entropy_bits = (charset_size as f64).log2() * length as f64;
+pub fn compute_strength(charset_size: usize, entropy_bits: f64) -> StrengthInfo {
     let strength = match entropy_bits as u64 {
         0..=39 => StrengthLabel::Weak,
         40..=59 => StrengthLabel::Fair,
@@ -80,11 +79,15 @@ pub fn print_plain(passwords: &[String]) {
 }
 
 /// Print each password followed by a strength summary.
+///
+/// With an empty `passwords` slice (e.g. `--clipboard`), only the summary is printed.
 pub fn print_strength(passwords: &[String], info: &StrengthInfo) {
     for p in passwords {
         println!("{p}");
     }
-    println!();
+    if !passwords.is_empty() {
+        println!();
+    }
     println!("Charset size : {} characters", info.charset_size);
     println!("Entropy      : {:.1} bits", info.entropy_bits);
     println!("Strength     : {}", info.strength);
@@ -101,13 +104,14 @@ pub fn print_strength(passwords: &[String], info: &StrengthInfo) {
 ///
 /// - Single password → `{"password": "..."}`.
 /// - Multiple passwords → `{"passwords": ["...", ...]}`.
+/// - No passwords (e.g. `--clipboard`) → no password field at all.
 /// - If `info` is supplied, `charset_size`, `entropy_bits`, and `strength`
 ///   fields are added to the same object.
 pub fn build_json(passwords: &[String], info: Option<&StrengthInfo>) -> Value {
-    let mut obj = if passwords.len() == 1 {
-        json!({ "password": passwords[0] })
-    } else {
-        json!({ "passwords": passwords })
+    let mut obj = match passwords {
+        [] => json!({}),
+        [single] => json!({ "password": single }),
+        _ => json!({ "passwords": passwords }),
     };
 
     if let Some(info) = info {
@@ -146,38 +150,42 @@ fn round2(x: f64) -> f64 {
 mod tests {
     use super::*;
 
+    fn uniform_bits(charset_size: usize, length: usize) -> f64 {
+        (charset_size as f64).log2() * length as f64
+    }
+
     #[test]
     fn weak_password_rated_weak() {
         // 10^6 ≈ 19.9 bits → Weak
-        let info = compute_strength(10, 6);
+        let info = compute_strength(10, uniform_bits(10, 6));
         assert_eq!(info.strength, StrengthLabel::Weak);
     }
 
     #[test]
     fn fair_password_rated_fair() {
         // 94^8 ≈ 52.4 bits → Fair
-        let info = compute_strength(94, 8);
+        let info = compute_strength(94, uniform_bits(94, 8));
         assert_eq!(info.strength, StrengthLabel::Fair);
     }
 
     #[test]
     fn good_password_rated_good() {
         // 94^10 ≈ 65.5 bits → Good
-        let info = compute_strength(94, 10);
+        let info = compute_strength(94, uniform_bits(94, 10));
         assert_eq!(info.strength, StrengthLabel::Good);
     }
 
     #[test]
     fn strong_password_rated_strong() {
         // 94^16 ≈ 104.9 bits → Strong
-        let info = compute_strength(94, 16);
+        let info = compute_strength(94, uniform_bits(94, 16));
         assert_eq!(info.strength, StrengthLabel::Strong);
     }
 
     #[test]
     fn very_strong_password_rated_very_strong() {
         // 94^20 ≈ 131.1 bits → Very Strong
-        let info = compute_strength(94, 20);
+        let info = compute_strength(94, uniform_bits(94, 20));
         assert_eq!(info.strength, StrengthLabel::VeryStrong);
     }
 
@@ -207,11 +215,20 @@ mod tests {
     #[test]
     fn build_json_with_strength_includes_all_fields() {
         let passwords = vec!["abc123".to_string()];
-        let info = compute_strength(94, 16);
+        let info = compute_strength(94, uniform_bits(94, 16));
         let v = build_json(&passwords, Some(&info));
         assert!(v["entropy_bits"].is_number());
         assert!(v["strength"].is_string());
         assert!(v["charset_size"].is_number());
+    }
+
+    #[test]
+    fn build_json_without_passwords_omits_password_fields() {
+        let info = compute_strength(94, uniform_bits(94, 16));
+        let v = build_json(&[], Some(&info));
+        assert!(v.get("password").is_none());
+        assert!(v.get("passwords").is_none());
+        assert!(v["entropy_bits"].is_number());
     }
 
     #[test]

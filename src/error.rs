@@ -19,6 +19,20 @@ pub enum AppError {
     #[error("minimum constraints total {needed} characters but --length is only {length}")]
     LengthTooShort { length: usize, needed: usize },
 
+    /// `--length` is outside the supported range.
+    #[error("--length must be between 1 and {max}, but {length} was given")]
+    LengthOutOfRange { length: usize, max: usize },
+
+    /// `--count` is outside the supported range.
+    #[error("--count must be between 1 and {max}, but {count} was given")]
+    CountOutOfRange { count: usize, max: usize },
+
+    /// `--min-*` was combined with `--charset`, which has no category metadata.
+    #[error(
+        "--min-* options cannot be used with --charset (custom pools have no character categories)"
+    )]
+    MinWithCustomCharset,
+
     /// `--clipboard` was combined with `--count > 1`.
     #[error("--clipboard can only be used with --count 1, but --count {0} was given")]
     ClipboardCountConflict(usize),

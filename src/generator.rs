@@ -94,6 +94,35 @@ pub fn generate_many(config: &GeneratorConfig<'_>, count: usize) -> Result<Vec<S
     (0..count).map(|_| generate(config)).collect()
 }
 
+/// Conservative estimate of the entropy (in bits) of one generated password.
+///
+/// Mirrors the generation algorithm: each mandatory character contributes
+/// `log₂(category pool size)` and each fill character `log₂(combined pool
+/// size)`. The final shuffle can only add entropy (the output determines the
+/// pre-shuffle sequence once the permutation is known), so ignoring it yields
+/// a lower bound. Without `--min-*` this equals `log₂(pool) × length`.
+pub fn entropy_bits(config: &GeneratorConfig<'_>) -> f64 {
+    let charset = config.charset;
+    let mandatory = [
+        (charset.lowercase.len(), config.min_lowercase),
+        (charset.uppercase.len(), config.min_uppercase),
+        (charset.digits.len(), config.min_digits),
+        (charset.symbols.len(), config.min_symbols),
+    ];
+
+    let mut bits = 0.0;
+    let mut fixed = 0;
+    for (pool_size, n) in mandatory {
+        if pool_size > 0 && n > 0 {
+            bits += (pool_size as f64).log2() * n as f64;
+            fixed += n;
+        }
+    }
+
+    let remaining = config.length.saturating_sub(fixed);
+    bits + (charset.chars.len() as f64).log2() * remaining as f64
+}
+
 /// Pick `n` random characters from `pool` and append them to `buf`.
 ///
 /// `gen_range` (rand 0.8) uses Lemire's fast algorithm internally, which
@@ -252,6 +281,33 @@ mod tests {
                 "lowercase found in password: {pw}"
             );
         }
+    }
+
+    #[test]
+    fn entropy_without_min_constraints_is_uniform_formula() {
+        let cs = CharsetBuilder::default().build().unwrap();
+        let config = make_config(&cs);
+        let expected = 94f64.log2() * 16.0;
+        assert!((entropy_bits(&config) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn entropy_accounts_for_mandatory_characters() {
+        // 20 chars with one of each category: 4 mandatory draws from the
+        // category pools plus 16 fill draws from the 94-char pool.
+        let cs = CharsetBuilder::default().build().unwrap();
+        let config = GeneratorConfig {
+            charset: &cs,
+            length: 20,
+            min_lowercase: 1,
+            min_uppercase: 1,
+            min_digits: 1,
+            min_symbols: 1,
+        };
+        let expected = (26f64 * 26.0 * 10.0 * 32.0).log2() + 94f64.log2() * 16.0;
+        let bits = entropy_bits(&config);
+        assert!((bits - expected).abs() < 1e-9);
+        assert!(bits < 94f64.log2() * 20.0);
     }
 
     #[test]

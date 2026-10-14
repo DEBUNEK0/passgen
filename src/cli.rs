@@ -2,6 +2,12 @@ use clap::Parser;
 
 use crate::error::AppError;
 
+/// Maximum accepted `--length`. Keeps memory use bounded for absurd inputs.
+pub const MAX_LENGTH: usize = 4096;
+
+/// Maximum accepted `--count`. Keeps memory use bounded for absurd inputs.
+pub const MAX_COUNT: usize = 1000;
+
 const AFTER_HELP: &str = "\
 EXAMPLES:
   pwgen                            # 16-character password (all types)
@@ -26,11 +32,11 @@ EXAMPLES:
     after_help = AFTER_HELP
 )]
 pub struct Args {
-    /// Password length.
+    /// Password length (1–4096).
     #[arg(short = 'l', long, default_value_t = 16, value_name = "N")]
     pub length: usize,
 
-    /// Number of passwords to generate.
+    /// Number of passwords to generate (1–1000).
     #[arg(short = 'c', long, default_value_t = 1, value_name = "N")]
     pub count: usize,
 
@@ -54,7 +60,9 @@ pub struct Args {
     #[arg(long)]
     pub exclude_ambiguous: bool,
 
-    /// Copy the generated password to the clipboard (requires --count 1).
+    /// Copy the generated password to the clipboard instead of printing it
+    /// (requires --count 1). The copy is marked as concealed so clipboard
+    /// managers that honor the convention do not record it.
     #[arg(long)]
     pub clipboard: bool,
 
@@ -74,7 +82,8 @@ pub struct Args {
     #[arg(long, default_value_t = 0, value_name = "N")]
     pub min_symbols: usize,
 
-    /// Use a fully custom character pool (overrides --no-* flags).
+    /// Use a fully custom character pool (overrides --no-* flags; cannot be
+    /// combined with --min-*).
     #[arg(long, value_name = "STRING")]
     pub charset: Option<String>,
 
@@ -97,13 +106,34 @@ impl Args {
     ///
     /// Returns the first [`AppError`] violation found.
     pub fn validate(&self) -> Result<(), AppError> {
+        if !(1..=MAX_LENGTH).contains(&self.length) {
+            return Err(AppError::LengthOutOfRange {
+                length: self.length,
+                max: MAX_LENGTH,
+            });
+        }
+        if !(1..=MAX_COUNT).contains(&self.count) {
+            return Err(AppError::CountOutOfRange {
+                count: self.count,
+                max: MAX_COUNT,
+            });
+        }
+
         // --clipboard is only meaningful with a single password.
         if self.clipboard && self.count > 1 {
             return Err(AppError::ClipboardCountConflict(self.count));
         }
 
         // --charset overrides all category flags; skip category-level checks.
+        // Custom pools have no category metadata, so --min-* cannot be honored.
         if self.charset.is_some() {
+            if self.min_lowercase > 0
+                || self.min_uppercase > 0
+                || self.min_digits > 0
+                || self.min_symbols > 0
+            {
+                return Err(AppError::MinWithCustomCharset);
+            }
             return Ok(());
         }
 
@@ -133,7 +163,13 @@ impl Args {
         }
 
         // Sum of minimums must not exceed the requested length.
-        let needed = self.min_lowercase + self.min_uppercase + self.min_digits + self.min_symbols;
+        // `saturating_add` prevents wrap-around on absurd inputs in release builds,
+        // which would otherwise let a huge total slip past this check.
+        let needed = self
+            .min_lowercase
+            .saturating_add(self.min_uppercase)
+            .saturating_add(self.min_digits)
+            .saturating_add(self.min_symbols);
         if needed > self.length {
             return Err(AppError::LengthTooShort {
                 length: self.length,
@@ -266,6 +302,74 @@ mod tests {
             "4",
         ]);
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn zero_length_fails() {
+        let args = parse(&["pwgen", "--length", "0"]);
+        assert!(matches!(
+            args.validate(),
+            Err(AppError::LengthOutOfRange { length: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn length_above_max_fails() {
+        let too_long = (MAX_LENGTH + 1).to_string();
+        let args = parse(&["pwgen", "--length", &too_long]);
+        assert!(matches!(
+            args.validate(),
+            Err(AppError::LengthOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn length_at_max_is_valid() {
+        let max = MAX_LENGTH.to_string();
+        let args = parse(&["pwgen", "--length", &max]);
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn zero_count_fails() {
+        // Previously `--clipboard --count 0` panicked on `passwords[0]`.
+        let args = parse(&["pwgen", "--clipboard", "--count", "0"]);
+        assert!(matches!(
+            args.validate(),
+            Err(AppError::CountOutOfRange { count: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn count_above_max_fails() {
+        let too_many = (MAX_COUNT + 1).to_string();
+        let args = parse(&["pwgen", "--count", &too_many]);
+        assert!(matches!(
+            args.validate(),
+            Err(AppError::CountOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn overflowing_min_constraints_fail_instead_of_wrapping() {
+        let half = (usize::MAX / 2 + 1).to_string();
+        let args = parse(&["pwgen", "--min-lowercase", &half, "--min-uppercase", &half]);
+        assert!(matches!(
+            args.validate(),
+            Err(AppError::LengthTooShort {
+                needed: usize::MAX,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn custom_charset_with_min_constraint_fails() {
+        let args = parse(&["pwgen", "--charset", "abc", "--min-digits", "1"]);
+        assert!(matches!(
+            args.validate(),
+            Err(AppError::MinWithCustomCharset)
+        ));
     }
 
     #[test]

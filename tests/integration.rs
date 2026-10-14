@@ -234,3 +234,74 @@ fn min_constraints_within_length_succeeds() {
         .assert()
         .success();
 }
+
+// ---------------------------------------------------------------------------
+// Input bounds and constraint validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn length_above_max_exits_with_error() {
+    pwgen()
+        .args(["--length", "4097"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--length must be between 1 and 4096",
+        ));
+}
+
+#[test]
+fn clipboard_with_count_0_exits_with_error_instead_of_panicking() {
+    pwgen()
+        .args(["--clipboard", "--count", "0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--count must be between 1 and 1000",
+        ))
+        .stderr(predicate::str::contains("panicked").not());
+}
+
+#[test]
+fn overflowing_min_constraints_exit_with_error() {
+    let half = (usize::MAX / 2 + 1).to_string();
+    pwgen()
+        .args(["--min-lowercase", &half, "--min-uppercase", &half])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("minimum constraints total"));
+}
+
+#[test]
+fn custom_charset_with_min_constraint_exits_with_error() {
+    pwgen()
+        .args(["--charset", "abc", "--min-digits", "1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with --charset"));
+}
+
+#[test]
+fn json_entropy_accounts_for_min_constraints() {
+    let output = pwgen()
+        .args([
+            "-l",
+            "20",
+            "--min-lowercase",
+            "1",
+            "--min-uppercase",
+            "1",
+            "--min-digits",
+            "1",
+            "--min-symbols",
+            "1",
+            "--json",
+            "--strength",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // log2(26·26·10·32) + 16·log2(94) ≈ 122.60, below the naive 20·log2(94) ≈ 131.09.
+    assert_eq!(v["entropy_bits"].as_f64().unwrap(), 122.6);
+}

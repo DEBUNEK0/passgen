@@ -60,19 +60,19 @@ pwgen -l 20 --min-lowercase 2 --min-uppercase 2 --min-digits 2 --min-symbols 2 -
 
 | Flag | Default | Description |
 |:-----|:--------|:------------|
-| `-l, --length <N>` | `16` | Password length |
-| `-c, --count <N>` | `1` | Number of passwords to generate |
+| `-l, --length <N>` | `16` | Password length (1–4096) |
+| `-c, --count <N>` | `1` | Number of passwords to generate (1–1000) |
 | `--no-lowercase` | — | Exclude lowercase letters (a–z) |
 | `--no-uppercase` | — | Exclude uppercase letters (A–Z) |
 | `--no-digits` | — | Exclude digits (0–9) |
 | `--no-symbols` | — | Exclude symbols (`!@#$` etc.) |
 | `--exclude-ambiguous` | — | Exclude visually ambiguous chars: `0 O 1 l I \|` |
-| `--clipboard` | — | Copy result to clipboard (requires `--count 1`) |
+| `--clipboard` | — | Copy result to clipboard instead of printing it (requires `--count 1`) |
 | `--min-lowercase <N>` | `0` | Require at least N lowercase letters |
 | `--min-uppercase <N>` | `0` | Require at least N uppercase letters |
 | `--min-digits <N>` | `0` | Require at least N digits |
 | `--min-symbols <N>` | `0` | Require at least N symbols |
-| `--charset <STRING>` | — | Custom character pool (overrides `--no-*` flags) |
+| `--charset <STRING>` | — | Custom character pool (overrides `--no-*` flags; cannot be combined with `--min-*`) |
 | `--json` | — | Output as JSON |
 | `--strength` | — | Show entropy and strength rating |
 | `-h, --help` | — | Print help |
@@ -81,6 +81,8 @@ pwgen -l 20 --min-lowercase 2 --min-uppercase 2 --min-digits 2 --min-symbols 2 -
 ## Strength Rating
 
 Entropy is calculated as `log₂(charset_size) × length`.
+
+With `--min-*` constraints, mandatory characters are drawn from their smaller category pools, so each of them contributes `log₂(category_size)` instead. For example, `-l 20` with one of each category is reported as `log₂(26·26·10·32) + 16·log₂(94) ≈ 122.6` bits rather than 131.1. This is a conservative lower bound (the final shuffle is not credited).
 
 | Length | Charset | Entropy | Rating |
 |:------:|:-------:|:-------:|:------:|
@@ -102,7 +104,8 @@ Entropy is calculated as `log₂(charset_size) × length`.
 - **RNG**: `rand::rngs::OsRng` delegates to `getrandom`, which calls the platform's secure entropy source (`/dev/urandom` on Linux/macOS, `BCryptGenRandom` on Windows). This is cryptographically secure.
 - **No modulo bias**: `rand::Rng::gen_range` uses Lemire's fast rejection sampling, ensuring uniform character selection.
 - **Fisher-Yates shuffle**: The final password is shuffled so mandatory characters (from `--min-*`) are not predictably placed at the front.
-- **Clipboard**: On macOS and Windows, clipboard content persists after the process exits. On Linux (X11/Wayland), it may be cleared when the process ends — use a clipboard manager (`xclip`, `wl-paste`, etc.) if you need persistence.
+- **Clipboard**: `--clipboard` keeps the password off stdout and marks the copy as concealed (`org.nspasteboard.ConcealedType` on macOS, history/cloud exclusion on Windows, `x-kde-passwordManagerHint` on Linux), so clipboard managers that honor these conventions do not record it. On macOS and Windows, clipboard content persists after the process exits. On Linux (X11/Wayland), it may be cleared when the process ends — use a clipboard manager (`xclip`, `wl-paste`, etc.) if you need persistence.
+- **Input bounds**: `--length` and `--count` are capped and the `--min-*` total is overflow-checked, so absurd inputs fail fast instead of exhausting memory.
 - **Terminal history**: Passwords printed to stdout may appear in your shell history if you use command substitution (e.g., `export PW=$(pwgen)`). Prefer `--clipboard` or redirect output to a file when this is a concern.
 
 ## Character Set

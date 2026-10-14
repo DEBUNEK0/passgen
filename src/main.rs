@@ -12,7 +12,7 @@ use clap::Parser;
 use crate::charset::CharsetBuilder;
 use crate::cli::Args;
 use crate::error::AppError;
-use crate::generator::{generate_many, GeneratorConfig};
+use crate::generator::{entropy_bits, generate_many, GeneratorConfig};
 use crate::output::{compute_strength, print_json, print_plain, print_strength};
 
 fn main() -> ExitCode {
@@ -53,29 +53,71 @@ fn run(args: Args) -> Result<(), AppError> {
 
     let passwords = generate_many(&config, args.count)?;
 
-    // --clipboard: copy the first (and only) password to the system clipboard.
+    // --clipboard: copy the first (and only) password to the system clipboard
+    // and keep it off stdout. `validate()` guarantees exactly one password.
     // On macOS/Windows the content persists after the process exits.
     // On Linux (X11/Wayland) the content may be cleared when the process ends;
     // a clipboard manager (e.g. xclip, wl-paste) is recommended for persistence.
     if args.clipboard {
-        let mut cb = Clipboard::new()?;
-        cb.set_text(passwords[0].clone())?;
+        copy_concealed(&passwords[0])?;
         eprintln!("Password copied to clipboard.");
     }
+    let printed: &[String] = if args.clipboard { &[] } else { &passwords };
 
     // `bool::then(|| ...)` is idiomatic for producing an `Option` from a bool.
     // It avoids the verbose `if condition { Some(expr) } else { None }` pattern.
     let strength_info = args
         .strength
-        .then(|| compute_strength(charset.chars.len(), args.length));
+        .then(|| compute_strength(charset.chars.len(), entropy_bits(&config)));
 
     if args.json {
-        print_json(&passwords, strength_info.as_ref())?;
+        print_json(printed, strength_info.as_ref())?;
     } else if let Some(ref info) = strength_info {
-        print_strength(&passwords, info);
+        print_strength(printed, info);
     } else {
-        print_plain(&passwords);
+        print_plain(printed);
     }
+
+    Ok(())
+}
+
+/// Copy `text` to the clipboard, asking clipboard managers not to record it.
+///
+/// macOS sets `org.nspasteboard.ConcealedType`; Windows excludes the entry from
+/// clipboard history and cloud sync; Linux sets the `x-kde-passwordManagerHint`
+/// hint. Managers that ignore these conventions may still record the copy.
+fn copy_concealed(text: &str) -> Result<(), AppError> {
+    let mut cb = Clipboard::new()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use arboard::SetExtApple;
+        cb.set().exclude_from_history().text(text)?;
+    }
+    #[cfg(windows)]
+    {
+        use arboard::SetExtWindows;
+        cb.set()
+            .exclude_from_history()
+            .exclude_from_cloud()
+            .text(text)?;
+    }
+    #[cfg(all(
+        unix,
+        not(target_os = "macos"),
+        not(target_os = "android"),
+        not(target_os = "emscripten")
+    ))]
+    {
+        use arboard::SetExtLinux;
+        cb.set().exclude_from_history().text(text)?;
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        all(unix, not(target_os = "android"), not(target_os = "emscripten"))
+    )))]
+    cb.set_text(text)?;
 
     Ok(())
 }
